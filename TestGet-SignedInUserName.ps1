@@ -13,19 +13,20 @@ $ErrorActionPreference = 'Stop'
 # -------------------------------------------------------------------
 # Configuration
 # -------------------------------------------------------------------
-$basePath        = "$($env:SystemDrive)\ProgramData\MspName" # Change this path to your desired location for the files to be written.
+$basePath        = "$($env:ProgramData)\RMM"
 $AutomationPath = "$basePath\Automation"
 $LogPath        = "$basePath\Logs"
-$ScriptName     = 'Run-As-LoggedOnUser-Test.ps1'
+$baseScriptName   = 'Run-As-LoggedOnUser' # Base name for the script, used to construct the copied script name and log file names. This allows for multiple similar scripts to coexist without hardcoding the same name in multiple places.
+$ScriptName     = "$baseScriptName.ps1" # The name of this script file. This is used to copy the script to the automation folder and to construct the scheduled task action. It is important that this matches the actual file name of the script.
 
 $CopiedScriptPath = Join-Path $AutomationPath $ScriptName
-$ChildLogPath     = Join-Path $LogPath 'Run-As-LoggedOnUser-Test-child.log'
-$ChildExitPath    = Join-Path $LogPath 'Run-As-LoggedOnUser-Test-child.exitcode'
-$ParentLogPath    = Join-Path $LogPath 'Run-As-LoggedOnUser-Test-parent.log'
-$EnvVarsJsonPath  = Join-Path $AutomationPath 'Run-As-LoggedOnUser-Test-envvars.json'
+$ChildLogPath     = Join-Path $LogPath "$baseScriptName-child.log"
+$ChildExitPath    = Join-Path $LogPath "$baseScriptName-child.exitcode"
+$ParentLogPath    = Join-Path $LogPath "$baseScriptName-parent.log"
+$EnvVarsJsonPath  = Join-Path $AutomationPath "$baseScriptName-envvars.json"
 
-$TaskPrefix     = 'RunAsUser'
-$TaskTimeoutSec = 120
+$TaskPrefix     = 'RunRMMJobAsUser' # Prefix for the scheduled task name. The actual task name will have a GUID appended to ensure uniqueness. This allows for multiple instances of this script to run without name collisions in the scheduled tasks.
+$TaskTimeoutSec = 120 # Number of seconds to wait for the scheduled task to complete before timing out. Adjust as needed based on expected runtime of the user phase.
 
 # Environment Variables Manifest
 # This section defines which environment variables should be passed from the system phase (running as SYSTEM)
@@ -133,11 +134,11 @@ function Invoke-UserPhase {
         }
 
         Write-ChildLog "Child phase started."
+        Write-ChildLog "Security context: $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
 
         # -------------------------------------------------------------------
         # Your code to run as the logged-on user goes here.
 
-        Write-ChildLog "Security context: $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
         Write-ChildLog "env:USERNAME = $env:USERNAME"
         Write-ChildLog "env:TEST_ENV_VAR = $env:TEST_ENV_VAR"
 
