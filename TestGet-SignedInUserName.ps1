@@ -20,7 +20,7 @@ $ErrorActionPreference = 'Stop'
 $basePath         = "$($env:ProgramData)\RMM"
 $AutomationPath   = "$basePath\Automation"
 $LogPath          = "$basePath\Logs"
-$dropPath         = "$basePath\UDF"
+$dropPath         = "$basePath\Temp"
 $baseScriptName   = 'Run-As-LoggedOnUser' # Base name for the script, used to construct the copied script name and log file names. Changing this is not necessary, but it allows for multiple similar scripts to coexist without stepping on each other's logs or copied scripts.
 $ScriptName       = "$baseScriptName.ps1" # The name of this script file. This is used to copy the script to the automation folder and to construct the scheduled task action. It is important that this matches the actual file name of the script.
 $dropFileName     = "$baseScriptName-DattoDrop.xml" # Temporary file used to pass data from the user phase back to the parent phase for writing to user-defined fields in Datto RMM. The user phase writes the desired UDF values to this file, and the parent phase reads it and writes the values to the registry. This is necessary because the user phase runs in a non-privileged context and cannot write directly to the registry location for UDFs.
@@ -131,7 +131,7 @@ function Invoke-UserPhase {
                 $envVars = Get-Content -LiteralPath $EnvVarsJsonPath -Raw | ConvertFrom-Json
                 foreach ($varName in $envVars.PSObject.Properties.Name) {
                     [Environment]::SetEnvironmentVariable($varName, $envVars.$varName, 'Process')
-                    Write-ChildLog "Set env:$varName = $($envVars.$varName)"
+                    Write-ChildLog "Set env:$varName from JSON file for user phase."
                 }
             }
             catch {
@@ -224,7 +224,7 @@ function Invoke-SystemPhase {
     foreach ($varName in $EnvironmentVariableManifest) {
         if (Test-Path "env:$varName") {
             $envVars[$varName] = [Environment]::GetEnvironmentVariable($varName)
-            Write-ParentLog "Captured env:$varName = $($envVars[$varName])"
+            Write-ParentLog "Captured env:$varName"
         } else {
             Write-ParentLog "Environment variable '$varName' not found, skipping."
         }
