@@ -17,11 +17,11 @@ $ErrorActionPreference = 'Stop'
 # -------------------------------------------------------------------
 # Configuration
 # -------------------------------------------------------------------
-$basePath        = "$($env:ProgramData)\RMM"
-$AutomationPath = "$basePath\Automation"
-$LogPath        = "$basePath\Logs"
+$basePath         = "$($env:ProgramData)\RMM"
+$AutomationPath   = "$basePath\Automation"
+$LogPath          = "$basePath\Logs"
 $dropPath         = "$basePath\UDF"
-$baseScriptName   = 'Run-As-LoggedOnUser' # Base name for the script, used to construct the copied script name and log file names. This allows for multiple similar scripts to coexist without hardcoding the same name in multiple places.
+$baseScriptName   = 'Run-As-LoggedOnUser' # Base name for the script, used to construct the copied script name and log file names. Changing this is not necessary, but it allows for multiple similar scripts to coexist without stepping on each other's logs or copied scripts.
 $ScriptName       = "$baseScriptName.ps1" # The name of this script file. This is used to copy the script to the automation folder and to construct the scheduled task action. It is important that this matches the actual file name of the script.
 $dropFileName     = "$baseScriptName-DattoDrop.xml" # Temporary file used to pass data from the user phase back to the parent phase for writing to user-defined fields in Datto RMM. The user phase writes the desired UDF values to this file, and the parent phase reads it and writes the values to the registry. This is necessary because the user phase runs in a non-privileged context and cannot write directly to the registry location for UDFs.
 
@@ -43,6 +43,7 @@ $TaskTimeoutSec = 120 # Number of seconds to wait for the scheduled task to comp
 # Instructions for developers:
 # - Add the names of environment variables you want to pass as strings in the array below.
 # - Example: $EnvironmentVariableManifest = @('VAR1', 'VAR2')
+# - YOU MUST INCLUDE ANY SITE OR GLOBAL VARIABLES YOU WANT TO USE IN THE USER PHASE IN THIS MANIFEST, OTHERWISE THEY WILL NOT BE AVAILABLE IN THE USER PHASE.
 # - If no variables need to be passed, leave the array empty: $EnvironmentVariableManifest = @()
 # - The system phase will read these variables (if they exist) and write them to a JSON file in the automation folder.
 # - The user phase will read the JSON file and set the environment variables in the user context.
@@ -354,6 +355,24 @@ function Invoke-SystemPhase {
         }
         catch {
             Write-ParentLog "Failed to remove scheduled task: $($_.Exception.Message)"
+        }
+        try {
+            if (Test-Path -LiteralPath $CopiedScriptPath) {
+                Remove-Item -LiteralPath $CopiedScriptPath -Force -ErrorAction SilentlyContinue
+                Write-ParentLog "Removed copied script: $CopiedScriptPath"
+            }
+        }
+        catch {
+            Write-ParentLog "Failed to remove copied script: $($_.Exception.Message)"
+        }
+        try {
+            if (Test-Path -LiteralPath $EnvVarsJsonPath) {
+                Remove-Item -LiteralPath $EnvVarsJsonPath -Force -ErrorAction SilentlyContinue
+                Write-ParentLog "Removed environment variables JSON file: $EnvVarsJsonPath"
+            }
+        }
+        catch {
+            Write-ParentLog "Failed to remove environment variables JSON file: $($_.Exception.Message)"
         }
     }
 }
