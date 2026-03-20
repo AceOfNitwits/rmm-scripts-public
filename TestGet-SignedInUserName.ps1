@@ -2,6 +2,10 @@
 # This script tests running a child process as the currently logged-on user from a parent process running as SYSTEM.
 # It is designed to be run in two phases: the parent phase (run as SYSTEM) and the user phase (run as the logged-on user).
 # The parent phase creates a scheduled task to run the user phase, waits for it to complete, and captures the output and exit code from the user phase.
+# The output is also optionally saved to a user-defined field for use in Datto RMM.
+# Note that a PowerShell window will briefly flash on the screen when the scheduled task is triggered to run the user phase, but the script is designed to run with a hidden window style to minimize this as much as possible.
+
+# The customisable portion of the script that runs in the user phase is where you would put code to do work. The parent phase will handle writing the output to the appropriate registry location for user-defined fields based on the value of $UDF that you set in the user phase.
 
 [CmdletBinding()]
 param(
@@ -16,9 +20,12 @@ $ErrorActionPreference = 'Stop'
 $basePath        = "$($env:ProgramData)\RMM"
 $AutomationPath = "$basePath\Automation"
 $LogPath        = "$basePath\Logs"
+$dropPath         = "$basePath\UDF"
 $baseScriptName   = 'Run-As-LoggedOnUser' # Base name for the script, used to construct the copied script name and log file names. This allows for multiple similar scripts to coexist without hardcoding the same name in multiple places.
-$ScriptName     = "$baseScriptName.ps1" # The name of this script file. This is used to copy the script to the automation folder and to construct the scheduled task action. It is important that this matches the actual file name of the script.
+$ScriptName       = "$baseScriptName.ps1" # The name of this script file. This is used to copy the script to the automation folder and to construct the scheduled task action. It is important that this matches the actual file name of the script.
+$dropFileName     = "$baseScriptName-DattoDrop.xml" # Temporary file used to pass data from the user phase back to the parent phase for writing to user-defined fields in Datto RMM. The user phase writes the desired UDF values to this file, and the parent phase reads it and writes the values to the registry. This is necessary because the user phase runs in a non-privileged context and cannot write directly to the registry location for UDFs.
 
+$dropFilePath     = Join-Path -Path $dropPath -ChildPath $dropFileName
 $CopiedScriptPath = Join-Path $AutomationPath $ScriptName
 $ChildLogPath     = Join-Path $LogPath "$baseScriptName-child.log"
 $ChildExitPath    = Join-Path $LogPath "$baseScriptName-child.exitcode"
@@ -41,7 +48,7 @@ $TaskTimeoutSec = 120 # Number of seconds to wait for the scheduled task to comp
 # - The user phase will read the JSON file and set the environment variables in the user context.
 # - If the manifest is empty, an empty JSON file is still written, and the user phase will attempt to read it (harmless if empty).
 $EnvironmentVariableManifest = @(
-    'TEST_ENV_VAR'
+    'UDF'   # The 'UDF' environment variable is required if you want to use the Datto Drop Sweeper functionality to write values to user-defined fields in Datto RMM. Set this environment variable to the number of the user-defined field you want to write to (e.g. '1' for Custom1, '2' for Custom2, etc.) in order for the user phase to write the desired output to the drop file for the parent phase to read and write to the registry for user-defined fields in Datto RMM.
 )
 
 # -------------------------------------------------------------------
@@ -136,14 +143,32 @@ function Invoke-UserPhase {
         Write-ChildLog "Child phase started."
         Write-ChildLog "Security context: $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
 
+        $UDF = $env:UDF # This is included for Datto RMM use. It designates which user-defined field to store the output in.
+
         # -------------------------------------------------------------------
         # Your code to run as the logged-on user goes here.
+        # If you have output that you want to capture and write to user-defined fields in Datto RMM, set the $myOutput variable to that output, and set the $UDF variable to the number of the user-defined field you want to write to (e.g. '1' for Custom1, '2' for Custom2, etc.). The script will handle writing the output to the appropriate registry location for the user-defined field when it returns to the parent phase.
 
-        Write-ChildLog "env:USERNAME = $env:USERNAME"
-        Write-ChildLog "env:TEST_ENV_VAR = $env:TEST_ENV_VAR"
+        $myOutput = $env:USERNAME
+        Write-ChildLog "env:USERNAME = $myOutput"
 
         # End of custom code.
         # -------------------------------------------------------------------
+
+        # Check if udf ouput is desired
+        if ($UDF -ne "none" -and $null -ne $UDF){
+            Write-ChildLog "UDF environment variable is set to '$UDF', preparing to write output to '$dropFilePath'."
+            $dattoDrop = @{} # Initialize the hashtable to store UDF values. This will be written to the drop file for the parent phase to read and write to the registry for Datto RMM user-defined fields.
+            Ensure-Folder -Path $dropPath # Make sure the folder for the drop file exists.
+            $dattoDrop[$UDF] = $myOutput # Store the audit output in the hashtable with the key being the UDF name. The parent phase will read this and write it to the appropriate registry location for Datto RMM user-defined fields.
+            $dattoDrop | Export-Clixml -Path $dropFilePath -Encoding UTF8 # Write the hashtable to the drop file as XML for the parent phase to read. XML is used here instead of JSON because ConvertFrom-Json in PowerShell 5.x does not have the -AsHashtable parameter, which is needed to preserve the hashtable structure when writing and reading the drop file.
+            # Check to see if the file was written successfully
+            if (Test-Path -Path $dropFilePath) {
+                Write-ChildLog "Successfully wrote UDF output to drop file: $dropFilePath"
+            } else {
+                Write-ChildLog "Failed to write UDF output to drop file: $dropFilePath"
+            }
+        }
 
         Set-Content -Path $ChildExitPath -Value '0' -Encoding ascii
         exit 0
@@ -167,6 +192,11 @@ function Invoke-SystemPhase {
     Ensure-Folder -Path $AutomationPath
     Ensure-Folder -Path $LogPath
 
+    # Clean up any existing parent log to avoid confusion with previous runs. The first write to the parent log will create a new file, so we can be sure that all entries in the log are from the current run.
+    if (Test-Path -LiteralPath $ParentLogPath) {
+        Remove-Item -LiteralPath $ParentLogPath -Force -ErrorAction SilentlyContinue
+    }
+
     Write-ParentLog "Parent phase started."
     Write-ParentLog "Running as: $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
     Write-ParentLog "Original script path: $PSCommandPath"
@@ -178,6 +208,7 @@ function Invoke-SystemPhase {
     Copy-Item -LiteralPath $PSCommandPath -Destination $CopiedScriptPath -Force
     Write-ParentLog "Copied script to: $CopiedScriptPath"
 
+    # Clean up any existing log or exit code files from previous runs to avoid confusion. The user phase will create new ones when it runs.
     if (Test-Path -LiteralPath $ChildLogPath) {
         Remove-Item -LiteralPath $ChildLogPath -Force -ErrorAction SilentlyContinue
     }
@@ -288,6 +319,28 @@ function Invoke-SystemPhase {
         if ($childExitCode -ne '0') {
             throw "Child phase reported failure with exit code $childExitCode."
         }
+
+        # -------------------------------------------------------------------
+        # Datto Drop Sweeper 
+        # This portion of the script is to get around a limitation in Datto RMM, where scritps run in the context of a non-privileged user cannot write to the appropriate registry location to populate Datto RMM user-defined fields.
+
+        $dattoDrop = @{}
+        # Check for existence of drop file
+        If(Test-Path -Path $dropFilePath){
+            $dattoDrop = Import-Clixml -Path $dropFilePath -ErrorAction Stop # Import the drop file as XML to get the hashtable of UDF values from the user phase.
+            Remove-Item -Path $dropFilePath
+        }
+
+        # Write values to registry
+        $dattoDrop.Keys | ForEach-Object {
+            $myUDF = $_ # The number of the user-defined field to write to, which is the key in the dattoDrop hashtable.
+            $myValue = $dattoDrop[$_] # The value to write to the user-defined field, which is the value in the dattoDrop hashtable.
+            REG ADD "HKEY_LOCAL_MACHINE\SOFTWARE\CentraStage" /v Custom$myUDF /t REG_SZ /d "$myValue" /f # Write the value to the registry location for Datto RMM user-defined fields. The parent phase runs with enough privileges to write to this location, which allows the user phase to indirectly set user-defined field values by writing them to the drop file for the parent phase to read and write to the registry.
+            Write-ParentLog "$myValue was saved to udf $myUDF"
+        }
+        
+        # End of Datto Drop Sweeper
+        # -------------------------------------------------------------------
 
         Write-ParentLog 'Parent phase completed successfully.'
         exit 0
